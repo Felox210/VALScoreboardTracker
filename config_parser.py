@@ -39,16 +39,10 @@ def read_config():
     config.read(config_path)
     
     # Access values from the configuration file
-    teamSorting = config.getboolean('General', 'teamSorting')
-    team = config.get('General', 'team')
-    players = json.loads(config.get('General', 'players'))
     maps = json.loads(config.get('General', 'maps'))
     
     # Return a dictionary with the retrieved values
     config_values = {
-        'teamSorting': teamSorting,
-        'team': team,
-        'players': players,
         'maps': maps,
     }
     

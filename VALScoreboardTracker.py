@@ -1,9 +1,3 @@
-'''
-Code formally written by Alexander James Porter (Contact: AlexanderPorter1234@gmail.com) 20/02/2023
-Code has been optimised for reading screenshots of final scoreboard in the game VALORANT
-Lots of code is utilised from https://github.com/eihli/image-table-ocr#org67b1fc2
-'''
-
 import os
 import sys
 import cv2
@@ -13,6 +7,26 @@ from ocr_library import functions as srf
 import pyperclip
 from datetime import datetime
 import time
+
+def debug_team_detection(image):
+    """
+    Debug function to show exact BGR values and team detection for each row
+    """
+    height, width = image.shape[:2]
+    check_x = int(width * 0.1)
+    check_y = int(height * 0.5)
+    
+    pixel_color = image[check_y, check_x]
+    b, g, r = pixel_color
+    
+    # Convert BGR to hex for easier comparison
+    hex_color = "#{:02x}{:02x}{:02x}".format(r, g, b)
+    
+    return {
+        'bgr': (b, g, r),
+        'hex': hex_color,
+        'position': (check_x, check_y)
+    }
 
 def print_status(message):
     """Print status message with timestamp"""
@@ -129,23 +143,33 @@ def main():
                 agents = srf.identify_agents(headshots_images_rows)
 
                 print_status("Reading table data...")
-                output = srf.read_table_rows(cell_images_rows)
+                output = srf.read_table_rows(cell_images_rows, headshots_images_rows)
                 current_date = datetime.now().strftime("%d/%m/%Y")
                 
                 print_status("Merging data...")
-                merged_output = [
-                    [current_date] + row[:1] + [map_name] + [agents[i]] + row[1:] if isinstance(agents[i], str) else [map_name] + row[:1] + agents[i] + row[1:]
-                    for i, row in enumerate(output)
-                ]
+                merged_output = []
+                for i, row in enumerate(output):
+                    # Extract team information (first element) and rest of the data
+                    team = row[0]
+                    player_data = row[1:]
+                    
+                    # Create merged row with date, team, map, agent, and player data
+                    merged_row = [current_date, team, map_name, agents[i]] + player_data
+                    merged_output.append(merged_row)
 
-                print_status("Applying team/player filters...")
-                if config_data['teamSorting']:
-                    filtered_output = [row for row in merged_output if config_data['team'] in row[1]]
-                else:
-                    config_data['players'] = [player.replace(" ", "") for player in config_data['players']]
-                    filtered_output = [row for row in merged_output if any(player in row[1] for player in config_data['players'])]
+                print_status("Filtering team1 data...")
+                # Filter only rows where team is 'team1'
+                filtered_output = [row for row in merged_output if row[1] == 'team1']
 
-                srf.write_csv(filtered_output)
+                if not filtered_output:
+                    print_status("Warning: No team1 data found in this screenshot")
+                    continue
+
+                print_status("Cleaning output format...")
+                # Then remove team identifier from filtered data
+                clean_output = [[row[0], row[2], row[3]] + row[4:] for row in filtered_output]
+
+                srf.write_csv(clean_output)
                 print_status(f"Data written to CSV for {filename}")
 
         else:

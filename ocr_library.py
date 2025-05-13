@@ -15,60 +15,82 @@ from agent_recognition import find_matching_agent, load_images_from_folder
 #Setting up tesseract - only needs this if you have directly installed tesseract (I think).
 pytesseract.pytesseract.tesseract_cmd = "tesseract"
 
-
 class functions:
-
-    def get_most_similar(ocr_result, possible_names):
-        """Finds the closest match for an OCR result from a list of possible names."""
-        closest_match = difflib.get_close_matches(ocr_result, possible_names, n=1, cutoff=0.5)
+    def get_most_similar(ocr_result, possible_names, cutoff=0.5, n=1):
+        """Finds the closest match for an OCR result from a list of possible names.
+        
+        Args:
+            ocr_result (str): The string from OCR to match
+            possible_names (list): List of possible matching names
+            cutoff (float): How strict the matching should be (0.0 - 1.0, lower = more forgiving)
+            n (int): Number of matches to return
+        """
+        closest_match = difflib.get_close_matches(ocr_result, possible_names, n=n, cutoff=cutoff)
         return closest_match[0] if closest_match else "Unknown"
 
+    def get_team_by_background(image):
+        """
+        Determines team affiliation based on the background color of the player row.
+        
+        Team 1 (Blue/Yellow variants):   
+        - BGR(104-111, 120-125, 23-28)  -> Primary blue (#177868, #1b7d6f)
+        - BGR(79-80, 112, 121-123)      -> Yellow (#797050, #7b7050)
+        - BGR(11, 32, 101)              -> Dark blue (#65200b)
+        
+        Team 2 (Red variants):
+        - BGR(59-67, 45-52, 113-118)    -> All red variants (#712d3b to #763240)
+        """
+        height, width = image.shape[:2]
+        check_x = int(width * 0.1)
+        check_y = int(height * 0.5)
+        
+        if len(image.shape) == 3:
+            pixel_color = image[check_y, check_x]
+            b, g, r = pixel_color
+            
+            # Team 1 - Primary Blue variant
+            if ((100 <= b <= 115) and (120 <= g <= 130) and (20 <= r <= 30)):
+                return 'team1'
+            
+            # Team 1 - Yellow/Gold variant
+            if ((75 <= b <= 85) and (110 <= g <= 115) and (120 <= r <= 125)):
+                return 'team1'
+            
+            # Team 1 - Dark Blue variant
+            if ((5 <= b <= 15) and (25 <= g <= 35) and (95 <= r <= 105)):
+                return 'team1'
+                
+            # Team 2 - All Red variants (expanded range to catch all variants)
+            if ((55 <= b <= 70) and (45 <= g <= 55) and (110 <= r <= 120)):
+                return 'team2'
+            
+            # Additional Red variant check
+            if ((90 <= b <= 100) and (80 <= g <= 90) and (75 <= r <= 85)):
+                return 'team2'
+                
+            # Catch edge case reds (from image.png and 3.png)
+            if ((55 <= b <= 65) and (40 <= g <= 50) and (110 <= r <= 115)):
+                return 'team2'
+                
+        return 'unknown'
+
+
     def find_map_name(image, maps):
-        """
-        Recognizes the map name from a VALORANT scoreboard screenshot.
-
-        Args:
-            image: Preprocessed OpenCV image.
-
-        Returns:
-            str: Recognized map name or "Unknown" if not found.
-        """
-        # Apply thresholding to enhance text visibility
+        """Recognizes the map name from a VALORANT scoreboard screenshot."""
         _, thresh = cv2.threshold(image, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        # Define a region where the map name is typically located (top-left area)
-        map_region = thresh[60:140, 60:300]  # Adjusted for standard VALORANT scoreboard
-
-        # Use Tesseract OCR to extract text
-        custom_config = r'--psm 6'  # PSM 6 treats text as a block
+        map_region = thresh[60:140, 60:300]
+        custom_config = r'--psm 6'
         extracted_text = pytesseract.image_to_string(map_region, config=custom_config, lang='eng')
-        # print(f"OCR Extracted Text: '{extracted_text.strip()}'") Debug Prints
-
-        # Process extracted text and find a valid map name
-        # Remove newlines
         extracted_map_name = extracted_text.replace("\n", " ").strip()
-        # Extract only the last word after "MAP - "
+        
         if "MAP -" in extracted_map_name:
             extracted_map_name = extracted_map_name.split("MAP -")[-1].strip()
-         # print(f"Extracted Map Name: '{extracted_map_name}'") Debug Prints
-
-        # Apply fuzzy matching to correct OCR errors
+        
         corrected_map_name = functions.get_most_similar(extracted_map_name.capitalize(), maps)
-        # print(f"Corrected Map Name: '{corrected_map_name}'") Debug Prints
-
         return corrected_map_name
 
     def find_tables(image, image_colored):
-        """
-        Given an input image, detects and extracts tables from the image.
-
-        Parameters:
-        image (numpy.ndarray): Input image
-
-        Returns:
-        tables (List[numpy.ndarray]): List of extracted tables
-
-        """
+        """Given an input image, detects and extracts tables from the image."""
         BLUR_KERNEL_SIZE = (3, 3)
         STD_DEV_X_DIRECTION = 0
         STD_DEV_Y_DIRECTION = 0
@@ -108,25 +130,12 @@ class functions:
         approx_polys = [cv2.approxPolyDP(c, e, True) for c, e in zip(contours, epsilons)]
         bounding_rects = [cv2.boundingRect(a) for a in approx_polys]
 
-        # The link where a lot of this code was borrowed from recommends an
-        # additional step to check the number of "joints" inside this bounding rectangle.
-        # A table should have a lot of intersections. We might have a rectangular image
-        # here though which would only have 4 intersections, 1 at each corner.
-        # Leaving that step as a future TODO if it is ever necessary.
         images = [image[y:y+h, x:x+w] for x, y, w, h in bounding_rects]
         images_colored = [image_colored[y:y+h, x:x+w] for x, y, w, h in bounding_rects]
         return images[0], images_colored[0]
 
-    def extract_cell_images_from_table(image,image_colored):
-        """
-        Extracts cell images from a table image.
-
-        Parameters:
-        image (numpy.ndarray): A table image.
-
-        Returns:
-        cell_images_rows (list): A list of lists containing numpy.ndarray representing cell images.
-        """
+    def extract_cell_images_from_table(image, image_colored):
+        """Extracts cell images from a table image."""
         BLUR_KERNEL_SIZE = (1, 1)
         STD_DEV_X_DIRECTION = 0
         STD_DEV_Y_DIRECTION = 0
@@ -162,22 +171,14 @@ class functions:
         perimeter_lengths = [cv2.arcLength(c, True) for c in contours]
         epsilons = [0.05 * p for p in perimeter_lengths]
         approx_polys = [cv2.approxPolyDP(c, e, True) for c, e in zip(contours, epsilons)]
-
-        # Filter out contours that aren't rectangular. Those that aren't rectangular
-        # are probably noise.
-        approx_rects = [p for p in approx_polys if len(p) == 4]
         bounding_rects = [cv2.boundingRect(a) for a in approx_polys]
 
-        # Filter out rectangles that are too narrow or too short.
         MIN_RECT_WIDTH = 40
         MIN_RECT_HEIGHT = 10
         bounding_rects = [
             r for r in bounding_rects if MIN_RECT_WIDTH < r[2] and MIN_RECT_HEIGHT < r[3]
         ]
 
-        # The largest bounding rectangle is assumed to be the entire table.
-        # Remove it from the list. We don't want to accidentally try to OCR
-        # the entire table.
         largest_rect = max(bounding_rects, key=lambda r: r[2] * r[3])
         bounding_rects = [b for b in bounding_rects if b is not largest_rect]
 
@@ -208,7 +209,6 @@ class functions:
                 if not cell_in_same_row(c, first)
             ]
 
-        # Sort rows by average height of their center.
         def avg_height_of_center(row):
             centers = [y + h - h / 2 for x, y, w, h in row]
             return sum(centers) / len(centers)
@@ -229,20 +229,10 @@ class functions:
             cell_images_rows.append(cell_images_row)
             headshot_images_rows.append(headshot_images_row)
 
-
-        # return
         return cell_images_rows, headshot_images_rows
 
     def crop_to_text(image):
-        """
-        Crop an image to contain only the text region.
-
-        Args:
-            image: An input grayscale image.
-
-        Returns:
-            A cropped grayscale image containing only the text region.
-        """
+        """Crop an image to contain only the text region."""
         MAX_COLOR_VAL = 255
         BLOCK_SIZE = 15
         SUBTRACT_FROM_MEAN = -2
@@ -264,7 +254,6 @@ class functions:
         both = horizontal_lines + vertical_lines
         cleaned = img_bin - both
 
-        # Get rid of little noise.
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         opened = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
         opened = cv2.dilate(opened, kernel)
@@ -274,6 +263,7 @@ class functions:
         NUM_PX_COMMA = 6
         MIN_CHAR_AREA = 5 * 9
         char_sized_bounding_rects = [(x, y, w, h) for x, y, w, h in bounding_rects if w * h > MIN_CHAR_AREA]
+        
         if char_sized_bounding_rects:
             minx, miny, maxx, maxy = math.inf, math.inf, 0, 0
             for x, y, w, h in char_sized_bounding_rects:
@@ -284,64 +274,29 @@ class functions:
             x, y, w, h = minx, miny, maxx - minx, maxy - miny
             cropped = image[y:min(img_h, y+h+NUM_PX_COMMA), x:min(img_w, x+w)]
         else:
-            # If we morphed out all of the text, assume an empty image.
             cropped = MAX_COLOR_VAL * np.ones(shape=(20, 100), dtype=np.uint8)
+            
         bordered = cv2.copyMakeBorder(cropped, 5, 5, 5, 5, cv2.BORDER_CONSTANT, None, 255)
         return bordered
 
     def image_process(image):
-
-        """
-        Applies a series of image processing techniques to enhance the visibility of text in an image.
-
-        Args:
-            image: A NumPy array representing an image.
-
-        Returns:
-            A NumPy array representing the processed image.
-
-        Raises:
-            None
-        """
-        # Resize the image to make the text more visible
-        scale_percent = 1000 # Increase the size by 1000%
+        """Apply image processing to enhance text visibility."""
+        scale_percent = 1000
         width = int(image.shape[1] * scale_percent / 100)
         height = int(image.shape[0] * scale_percent / 100)
         dim = (width, height)
         rs_image = cv2.resize(image, dim, interpolation = cv2.INTER_AREA)
 
-        # Define the kernel size for dilation
         kernel = np.ones((5, 5), np.uint8)
-
-        # Apply dilation on the grayscale image
         dilated = cv2.dilate(rs_image, kernel, iterations=1)
-
-        # Apply Gaussian Blur to reduce noise in the image
         blurred = cv2.GaussianBlur(dilated, (3, 3), 0)
-
-        # Apply thresholding to the grayscale image
         threshold = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-
-        #Remove noise
-        no_noise = cv2.medianBlur(threshold,9)
-
+        no_noise = cv2.medianBlur(threshold, 9)
         inverted_image = cv2.bitwise_not(no_noise)
-
-        #write out image
         return inverted_image
 
     def ocr_image(image: np.ndarray, config: str = '', lang: str = '') -> str:
-        """
-        Perform OCR (Optical Character Recognition) on an image using Tesseract.
-
-        Args:
-            image (numpy.ndarray): The image to perform OCR on.
-            config (str): Optional Tesseract configuration parameters.
-            lang (str): Optional language code for Tesseract to use.
-
-        Returns:
-            str: The recognized text in the image.
-        """
+        """Perform OCR on an image using Tesseract."""
         return pytesseract.image_to_string(
             image,
             config=config,
@@ -349,15 +304,7 @@ class functions:
         )
 
     def row_seperator(image, BLUR_KERNEL_SIZE_input):
-        """
-        Separates the rows of a table in an image using various computer vision techniques.
-
-        Args:
-        - image: The input image in which to detect the table rows.
-
-        Returns:
-        - cells: A list of bounding rectangles representing the cells of the table.
-        """
+        """Separates the rows of a table in an image."""
         BLUR_KERNEL_SIZE = BLUR_KERNEL_SIZE_input
         STD_DEV_X_DIRECTION = 0
         STD_DEV_Y_DIRECTION = 0
@@ -374,7 +321,6 @@ class functions:
             BLOCK_SIZE,
             SUBTRACT_FROM_MEAN,
         )
-        #cv2.imwrite('yoyo.png',img_bin)
         vertical = horizontal = img_bin.copy()
         SCALE = 20
         image_width, image_height = horizontal.shape
@@ -395,46 +341,23 @@ class functions:
         epsilons = [0.05 * p for p in perimeter_lengths]
         approx_polys = [cv2.approxPolyDP(c, e, True) for c, e in zip(contours, epsilons)]
 
-        # Filter out contours that aren't rectangular. Those that aren't rectangular
-        # are probably noise.
-        approx_rects = [p for p in approx_polys if len(p) == 4]
         bounding_rects = [cv2.boundingRect(a) for a in approx_polys]
 
-
-        # Filter out rectangles that are too narrow or too short.
         MIN_RECT_WIDTH = 9
         MIN_RECT_HEIGHT = 14
         bounding_rects = [
             r for r in bounding_rects if MIN_RECT_WIDTH < r[2] and MIN_RECT_HEIGHT < r[3]
         ]
 
-        # The largest bounding rectangle is assumed to be the entire table.
-        # Remove it from the list. We don't want to accidentally try to OCR
-        # the entire table.
         largest_rect = max(bounding_rects, key=lambda r: r[2] * r[3])
         bounding_rects = [b for b in bounding_rects if b is not largest_rect]
 
-        #Filter out the smallest rectangle that overlaps with another
-        bounding_rects=functions.get_non_overlapping_rectangles(bounding_rects)
-
+        bounding_rects = functions.get_non_overlapping_rectangles(bounding_rects)
         cells = [c for c in bounding_rects]
-
         return cells
 
     def image_resize(image: np.ndarray, scale_percent: int) -> np.ndarray:
-        """
-        Resizes the input image by a given scale percentage.
-
-        Args:
-            image: A numpy array representing an image.
-            scale_percent: An integer value indicating the percentage to scale the image by.
-
-        Returns:
-            A numpy array representing the resized image.
-        """
-
-        # Resize the image to make the text more visible
-        scale_percent = scale_percent
+        """Resize an image by a given scale percentage."""
         width = int(image.shape[1] * scale_percent / 100)
         height = int(image.shape[0] * scale_percent / 100)
         dim = (width, height)
@@ -442,19 +365,7 @@ class functions:
         return resized_image
 
     def get_non_overlapping_rectangles(rectangles):
-        """
-        Given a list of rectangles, returns a list of non-overlapping rectangles.
-
-        Parameters:
-        rectangles (list): A list of tuples representing the rectangles, with each tuple containing four values:
-                            the x-coordinate of the top-left corner, the y-coordinate of the top-left corner,
-                            the width of the rectangle, and the height of the rectangle.
-
-        Returns:
-        list: A list of tuples representing the non-overlapping rectangles, with each tuple containing four values:
-              the x-coordinate of the top-left corner, the y-coordinate of the top-left corner,
-              the width of the rectangle, and the height of the rectangle.
-        """
+        """Get non-overlapping rectangles from a list of rectangles."""
         non_overlapping_rectangles = []
         overlapping_rectangles = []
         for i, rect1 in enumerate(rectangles):
@@ -482,122 +393,77 @@ class functions:
         non_overlapping_rectangles = list(set(non_overlapping_rectangles))
         return non_overlapping_rectangles
 
-    def read_table_rows(cell_images_rows):
-        """
-        Reads each player's stats from a table represented by a list of rows images.
-        Processes the images, reads them using OCR and writes a list for output.
-
-        Parameters:
-        cell_image_rows (list): A list of rows images, each containing cells representing a player's stats.
-
-        Returns:
-        output (list): A list of lists, where each sublist contains the player's name and stats in string format.
-                       The sublists are sorted by player name in alphabetical order.
-        """
-        n=0
-        output=[]
+    def read_table_rows(cell_images_rows, cell_images_colored):
+        """Read table rows and extract player stats with team detection."""
+        n = 0
+        output = []
         scale = 10
         logging.info("Reading each players stats, please wait.")
-        for row in cell_images_rows:
-            temp_output=[]
-            n+=1
-            # cv2.imwrite("debug/test_rows" +str(n) + ".png", row[0]) # for debugging
-            image=row[0]
-
-            #Seperate rows
-            cells=functions.row_seperator(image,(9,9))
-            cells=sorted(cells,key=lambda x:x[0])
-
-            #Seperate the cells
+        
+        for row, row_colored in zip(cell_images_rows, cell_images_colored):
+            temp_output = []
+            n += 1
+            image = row[0]
+            image_colored = row_colored[0]
+            
+            # Determine team affiliation
+            team = functions.get_team_by_background(image_colored)
+            
+            cells = functions.row_seperator(image, (9,9))
+            cells = sorted(cells, key=lambda x: x[0])
             cells = [c for c in cells if c[0] > (0.24*(row[0].shape[1]))]
-
-            #Get cells again if did not capture them all
+            
             if len(cells) != 8:
-                cells=functions.row_seperator(image,(11,11))
-                cells=sorted(cells,key=lambda x:x[0])
+                cells = functions.row_seperator(image, (11,11))
+                cells = sorted(cells, key=lambda x: x[0])
                 cells = [c for c in cells if c[0] > (0.24*(row[0].shape[1]))]
-            #This is in here for debugging.
-            #Draw on each cell to check
-            #This makes the code bug out. Helpful to debug and see the boxes but seems to draw rectangles on wrong image?
-            # for cnt in cells:
-            #    x, y, w, h = cnt
-            #    cv2.rectangle(image, (x, y), (x + w, y + h), (0, 0, 255), 2)
-            # cv2.imwrite("debug/yo-" + str(n) + ".png", image)
-
-            #Process image for OCR
-            image=functions.image_process(image)
-            name=image[0:100*scale,0:300*scale]
-            # cv2.imwrite("debug/name-" + str(n) + ".png",name)
-
-            #OCR the name.
+            
+            image = functions.image_process(image)
+            name = image[0:100*scale, 0:300*scale]
+            
             ocr_name = functions.ocr_image(name, '-c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_ --psm 7', 'eng+kor+jpn+chi_sim')
             if str(ocr_name).strip() == "":
                 ocr_name = "err"
+                
+            # Add team information to output
+            temp_output.append(team)
             temp_output.append(str(ocr_name).strip())
-            logging.info("Name: " + str(ocr_name).strip())
-
-            #OCR each cell to get numbers
+            logging.info(f"Team: {team}, Name: {str(ocr_name).strip()}")
+            
             for c, cnt in enumerate(cells):
                 x, y, w, h = cnt
-                cropped=image[scale*y:scale*(y+h), scale*x:scale*(x+w)]
-                cropped=functions.image_resize(cropped,20)
-                # Define the kernel size for dilation
+                cropped = image[scale*y:scale*(y+h), scale*x:scale*(x+w)]
+                cropped = functions.image_resize(cropped, 20)
                 kernel = np.ones((1, 1), np.uint8)
-                # Apply dilation on the grayscale image
                 cropped = cv2.dilate(cropped, kernel, iterations=1)
-                #cropped = cv2.copyMakeBorder(cropped, 2, 2, 2, 2, cv2.BORDER_CONSTANT, None, 0)
-                #cv2.imwrite("crop"+str(c)+".png",cropped)
-                ocr_cropped=functions.ocr_image(cropped, '-c tessedit_char_whitelist=0123456789 --psm 7', 'eng')
+                ocr_cropped = functions.ocr_image(cropped, '-c tessedit_char_whitelist=0123456789 --psm 7', 'eng')
                 temp_output.append(str(ocr_cropped).strip())
+                
             temp_output = [e for e in temp_output if e]
             output.append(temp_output)
-        # remove the sorting step
-        # output = sorted(output,  key=lambda x: x[0])
+            
         return output
 
     def write_csv(output):
-        """
-        Writes the output list to a CSV file named "scoreboard.csv".
-
-        Parameters:
-        output (list): A list of lists containing the data to write to the CSV file.
-
-        Returns:
-        None
-        """
-        #Write the output file in csv format.
+        """Write output to CSV file."""
         with open('scoreboard.csv', 'a', newline='') as f:
-            writer = csv.writer(f,delimiter=';')
+            writer = csv.writer(f, delimiter=';')
             writer.writerows(output)
 
-
     def identify_agents(headshots_images_rows):
-        """
-        Identifies agents from the headshot images.
-
-        Parameters:
-        headshots (List[numpy.ndarray]): A list of headshot images.
-
-        Returns:
-        List[str]: A list of agent names.
-        """
-        # Load reference images and agent names
+        """Identify agents from headshot images."""
         reference_folder = './agent-images'
         reference_images, agent_names = load_images_from_folder(reference_folder)
-
+        
         identified_agents = []
-        n=0
+        n = 0
         temp_image_path = './temp_headshot.png'
+        
         for row in headshots_images_rows:
-            n+=1
-            # Save the headshot temporarily
+            n += 1
             cv2.imwrite(temp_image_path, row[0])
-
-            # Identify the agent
             agent_name = find_matching_agent(temp_image_path, reference_images, agent_names)
-            agent_name = agent_name.capitalize() # Capitalization of Agent Name
+            agent_name = agent_name.capitalize()
             identified_agents.append(agent_name)
-        # remove temp_headshot.png
-        # os.remove(temp_image_path)
-
+            
         return identified_agents
